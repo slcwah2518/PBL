@@ -1,0 +1,302 @@
+import pandas as pd
+import numpy as np
+from scipy.cluster.hierarchy import linkage, fcluster
+import matplotlib.pyplot as plt
+import seaborn as sns
+from collections import defaultdict
+import numbers
+from sklearn.preprocessing import StandardScaler
+
+# 커피니 월별 DTW
+def fastdtw(x, y, radius=1, dist=None):
+    x, y, dist = __prep_inputs(x, y, dist)
+    return __fastdtw(x, y, radius, dist)
+
+def __difference(a, b):
+    return abs(a - b)
+
+def __norm(p):
+    return lambda a, b: np.linalg.norm(np.atleast_1d(a) - np.atleast_1d(b), p)
+
+def __fastdtw(x, y, radius, dist):
+    min_time_size = radius + 2
+
+    if len(x) < min_time_size or len(y) < min_time_size:
+        return dtw(x, y, dist=dist)
+
+    x_shrinked = __reduce_by_half(x)
+    y_shrinked = __reduce_by_half(y)
+    distance, path = __fastdtw(x_shrinked, y_shrinked, radius=radius, dist=dist)
+    window = __expand_window(path, len(x), len(y), radius)
+    return __dtw(x, y, window, dist=dist)
+
+def __prep_inputs(x, y, dist):
+    x = np.asanyarray(x, dtype='float').flatten()
+    y = np.asanyarray(y, dtype='float').flatten()
+
+    if x.ndim == y.ndim > 1 and x.shape[1] != y.shape[1]:
+        raise ValueError('second dimension of x and y must be the same')
+    if isinstance(dist, numbers.Number) and dist <= 0:
+        raise ValueError('dist cannot be a negative integer')
+
+    if dist is None:
+        if x.ndim == 1:
+            dist = __difference
+        else:
+            dist = __norm(p=1)
+    elif isinstance(dist, numbers.Number):
+        dist = __norm(p=dist)
+
+    return x, y, dist
+
+def dtw(x, y, dist=None):
+    x, y, dist = __prep_inputs(x, y, dist)
+    return __dtw(x, y, None, dist)
+
+def __dtw(x, y, window, dist):
+    len_x, len_y = len(x), len(y)
+    if window is None:
+        window = [(i, j) for i in range(len_x) for j in range(len_y)]
+    window = ((i + 1, j + 1) for i, j in window)
+    D = defaultdict(lambda: (float('inf'),))
+    D[0, 0] = (0, 0, 0)
+    for i, j in window:
+        dt = dist(x[i-1], y[j-1])
+        D[i, j] = min((D[i-1, j][0]+dt, i-1, j), (D[i, j-1][0]+dt, i, j-1),
+                      (D[i-1, j-1][0]+dt, i-1, j-1), key=lambda a: a[0])
+    path = []
+    i, j = len_x, len_y
+    while not (i == j == 0):
+        path.append((i-1, j-1))
+        i, j = D[i, j][1], D[i, j][2]
+    path.reverse()
+    return (D[len_x, len_y][0], path)
+
+def __reduce_by_half(x):
+    return [(x[i] + x[1+i]) / 2 for i in range(0, len(x) - len(x) % 2, 2)]
+
+def __expand_window(path, len_x, len_y, radius):
+    path_ = set(path)
+    for i, j in path:
+        for a, b in ((i + a, j + b)
+                     for a in range(-radius, radius+1)
+                     for b in range(-radius, radius+1)):
+            path_.add((a, b))
+
+    window_ = set()
+    for i, j in path_:
+        for a, b in ((i * 2, j * 2), (i * 2, j * 2 + 1),
+                     (i * 2 + 1, j * 2), (i * 2 + 1, j * 2 + 1)):
+            window_.add((a, b))
+
+    window = []
+    start_j = 0
+    for i in range(0, len_x):
+        new_start_j = None
+        for j in range(start_j, len_y):
+            if (i, j) in window_:
+                window.append((i, j))
+                if new_start_j is None:
+                    new_start_j = j
+            elif new_start_j is not None:
+                break
+        start_j = new_start_j
+
+    return window
+
+# 데이터 전처리
+data['영업일자'] = pd.to_datetime(data['영업일자'])
+data['월'] = data['영업일자'].dt.month
+
+# 월별 매출 데이터를 피벗 테이블로 변환
+monthly_sales = data.pivot_table(index='월', columns='매장명', values='순매출', aggfunc='sum').fillna(0)
+
+# Z-score 정규화
+scaler = StandardScaler()
+monthly_sales_normalized = scaler.fit_transform(monthly_sales)
+
+# 정규화된 데이터프레임으로 변환
+monthly_sales_normalized_df = pd.DataFrame(monthly_sales_normalized, index=monthly_sales.index, columns=monthly_sales.columns)
+
+# DTW 거리 계산 함수
+def dtw_distance_matrix(data):
+    num_stores = data.shape[1]
+    distance_matrix = np.zeros((num_stores, num_stores))
+
+    for i in range(num_stores):
+        for j in range(i + 1, num_stores):
+            x = data.iloc[:, i].values.reshape(-1, 1)
+            y = data.iloc[:, j].values.reshape(-1, 1)
+            distance, _ = fastdtw(x, y)
+            distance_matrix[i, j] = distance
+            distance_matrix[j, i] = distance
+
+    return distance_matrix
+
+# 거리 행렬 계산
+distance_matrix = dtw_distance_matrix(monthly_sales_normalized_df)
+
+# 계층적 군집화 수행
+linked = linkage(distance_matrix, 'complete')
+cluster_labels = fcluster(linked, t=4, criterion='maxclust')  # 클러스터 수는 5로 설정, 필요에 따라 조정 가능
+
+# 결과를 데이터프레임에 추가
+store_names = monthly_sales.columns
+cluster_results = pd.DataFrame({'매장명': store_names, 'Cluster': cluster_labels})
+
+# 클러스터링 결과 출력
+print(cluster_results)
+
+# 덴드로그램 시각화
+plt.figure(figsize=(10, 7))
+sns.clustermap(distance_matrix, row_linkage=linked, col_linkage=linked, figsize=(10, 10))
+plt.title('Hierarchical Clustering Dendrogram')
+plt.show()
+
+
+
+# 주어진 DTW 구현 코드
+def fastdtw(x, y, radius=1, dist=None):
+    x, y, dist = __prep_inputs(x, y, dist)
+    return __fastdtw(x, y, radius, dist)
+
+def __difference(a, b):
+    return abs(a - b)
+
+def __norm(p):
+    return lambda a, b: np.linalg.norm(np.atleast_1d(a) - np.atleast_1d(b), p)
+
+def __fastdtw(x, y, radius, dist):
+    min_time_size = radius + 2
+
+    if len(x) < min_time_size or len(y) < min_time_size:
+        return dtw(x, y, dist=dist)
+
+    x_shrinked = __reduce_by_half(x)
+    y_shrinked = __reduce_by_half(y)
+    distance, path = __fastdtw(x_shrinked, y_shrinked, radius=radius, dist=dist)
+    window = __expand_window(path, len(x), len(y), radius)
+    return __dtw(x, y, window, dist=dist)
+
+def __prep_inputs(x, y, dist):
+    x = np.asanyarray(x, dtype='float').flatten()
+    y = np.asanyarray(y, dtype='float').flatten()
+
+    if x.ndim == y.ndim > 1 and x.shape[1] != y.shape[1]:
+        raise ValueError('second dimension of x and y must be the same')
+    if isinstance(dist, numbers.Number) and dist <= 0:
+        raise ValueError('dist cannot be a negative integer')
+
+    if dist is None:
+        if x.ndim == 1:
+            dist = __difference
+        else:
+            dist = __norm(p=1)
+    elif isinstance(dist, numbers.Number):
+        dist = __norm(p=dist)
+
+    return x, y, dist
+
+def dtw(x, y, dist=None):
+    x, y, dist = __prep_inputs(x, y, dist)
+    return __dtw(x, y, None, dist)
+
+def __dtw(x, y, window, dist):
+    len_x, len_y = len(x), len(y)
+    if window is None:
+        window = [(i, j) for i in range(len_x) for j in range(len_y)]
+    window = ((i + 1, j + 1) for i, j in window)
+    D = defaultdict(lambda: (float('inf'),))
+    D[0, 0] = (0, 0, 0)
+    for i, j in window:
+        dt = dist(x[i-1], y[j-1])
+        D[i, j] = min((D[i-1, j][0]+dt, i-1, j), (D[i, j-1][0]+dt, i, j-1),
+                      (D[i-1, j-1][0]+dt, i-1, j-1), key=lambda a: a[0])
+    path = []
+    i, j = len_x, len_y
+    while not (i == j == 0):
+        path.append((i-1, j-1))
+        i, j = D[i, j][1], D[i, j][2]
+    path.reverse()
+    return (D[len_x, len_y][0], path)
+
+def __reduce_by_half(x):
+    return [(x[i] + x[1+i]) / 2 for i in range(0, len(x) - len(x) % 2, 2)]
+
+def __expand_window(path, len_x, len_y, radius):
+    path_ = set(path)
+    for i, j in path:
+        for a, b in ((i + a, j + b)
+                     for a in range(-radius, radius+1)
+                     for b in range(-radius, radius+1)):
+            path_.add((a, b))
+
+    window_ = set()
+    for i, j in path_:
+        for a, b in ((i * 2, j * 2), (i * 2, j * 2 + 1),
+                     (i * 2 + 1, j * 2), (i * 2 + 1, j * 2 + 1)):
+            window_.add((a, b))
+
+    window = []
+    start_j = 0
+    for i in range(0, len_x):
+        new_start_j = None
+        for j in range(start_j, len_y):
+            if (i, j) in window_:
+                window.append((i, j))
+                if new_start_j is None:
+                    new_start_j = j
+            elif new_start_j is not None:
+                break
+        start_j = new_start_j
+
+    return window
+
+
+# 데이터 전처리
+data['영업일자'] = pd.to_datetime(data['영업일자'])
+
+# 일별 매출 데이터를 피벗 테이블로 변환
+daily_sales = data.pivot_table(index='영업일자', columns='매장명', values='순매출').fillna(0)
+
+# Z-score 정규화
+scaler = StandardScaler()
+daily_sales_normalized = scaler.fit_transform(daily_sales)
+
+# 정규화된 데이터프레임으로 변환
+daily_sales_normalized_df = pd.DataFrame(daily_sales_normalized, index=daily_sales.index, columns=daily_sales.columns)
+
+# DTW 거리 계산 함수
+def dtw_distance_matrix(data):
+    num_stores = data.shape[1]
+    distance_matrix = np.zeros((num_stores, num_stores))
+
+    for i in range(num_stores):
+        for j in range(i + 1, num_stores):
+            x = data.iloc[:, i].values.reshape(-1, 1)
+            y = data.iloc[:, j].values.reshape(-1, 1)
+            distance, _ = fastdtw(x, y)
+            distance_matrix[i, j] = distance
+            distance_matrix[j, i] = distance
+
+    return distance_matrix
+
+# 거리 행렬 계산
+distance_matrix = dtw_distance_matrix(daily_sales_normalized_df)
+
+# 계층적 군집화 수행
+linked = linkage(distance_matrix, 'complete')
+cluster_labels = fcluster(linked, t=5, criterion='maxclust')  # 클러스터 수는 5로 설정, 필요에 따라 조정 가능
+
+# 결과를 데이터프레임에 추가
+store_names = daily_sales.columns
+daily_cluster_results = pd.DataFrame({'매장명': store_names, 'Cluster': cluster_labels})
+
+# 클러스터링 결과 출력
+print(daily_cluster_results)
+
+# 덴드로그램 시각화
+plt.figure(figsize=(10, 7))
+sns.clustermap(distance_matrix, row_linkage=linked, col_linkage=linked, figsize=(10, 10))
+plt.title('Hierarchical Clustering Dendrogram')
+plt.show()
