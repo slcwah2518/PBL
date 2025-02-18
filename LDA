@@ -1,0 +1,255 @@
+from konlpy.tag import Mecab
+mecab = Mecab()
+import pyLDAvis.sklearn
+import pandas as pd
+import numpy as np
+import pandas as pd
+import warnings
+warnings.filterwarnings(action='ignore')
+from tqdm import tqdm
+import re
+from gensim import corpora
+import gensim
+from collections import Counter
+import pyLDAvis.gensim_models as gensimvis
+
+df = pd.read_csv("/content/drive/MyDrive/chaewon folder/4학기/pbl/데이터/리뷰/ediya_review.csv")
+df.drop('Unnamed: 0', axis=1, inplace=True)
+df = df.dropna(axis=0)
+df.isnull().sum()
+review_removed = list(map(lambda review: re.sub('[^가-힣 ]', '', review), df['content']))
+df['content'] = review_removed
+
+from collections import Counter
+frequent = Counter(df.content).most_common()
+
+fre = frequent.copy()
+fre = pd.DataFrame(fre)
+
+#이디야 리뷰이기 때문에 이디야커피, 이디야, 이디야본사, 등도 불용어 사전에 추가하였음
+#불용어 사전은 github에서 다운 받음
+stopword_list = pd.read_excel('/content/drive/MyDrive/chaewon folder/4학기/pbl/데이터/리뷰/stopword_list.xlsx')
+def remove_stopword(tokens):
+    review_removed_stopword = []
+    for token in tokens:
+        # 토큰의 글자 수가 2글자 이상인 경우
+        if 1 < len(token):
+            # 토큰이 불용어가 아닌 경우만 분석용 리뷰 데이터로 포함
+            if token not in list(stopword_list['stopword']):
+                review_removed_stopword.append(token)
+    return review_removed_stopword
+    
+from gensim import corpora
+import pandas as pd
+import gensim
+import re
+from gensim.models.ldamodel import LdaModel
+
+# 불용어 리스트 로드
+stopword_list = pd.read_excel('/content/drive/MyDrive/chaewon folder/4학기/pbl/데이터/리뷰/stopword_list.xlsx')
+
+# 불용어 리스트를 전처리하여 공백을 제거
+stopword_list = stopword_list['stopword'].str.strip().tolist()
+
+# 자주 등장하는 불필요한 단어 제거
+high_frequency_words = ['좋아요', '좋네요', '이디야가', '사장님이','사장','사장님' '맛있어요', '카페' '매장', '자주', '좋고', '좋은', '굳', '굿']  # 예시 고빈도 단어
+
+# 불용어 리스트에 추가
+stopword_list.extend(high_frequency_words)
+
+# 불용어 삭제 함수에서 고빈도 단어도 함께 제거
+def remove_stopword(tokens):
+    review_removed_stopword = []
+    for token in tokens:
+        token = re.sub(r'[^\w\s]', '', token).strip()
+        if len(token) > 1 and token not in stopword_list:  # 2자 이상이면서 불용어가 아닌 경우만 포함
+            review_removed_stopword.append(token)
+    return review_removed_stopword
+
+# 토큰이 3개 이상인 리뷰만 선택
+MIN_TOKEN_NUMBER = 3
+
+def select_review(review_removed_stopword):
+    review_prep = []
+    for tokens in review_removed_stopword:
+        if len(tokens) >= MIN_TOKEN_NUMBER:
+            review_prep.append(tokens)
+    return review_prep
+
+# 리뷰 전처리
+tokenized_data = [remove_stopword(doc.split()) for doc in df['content']]
+
+# 전처리 후 토큰이 남아 있는지 확인
+print(f"Tokenized data: {tokenized_data[:5]}")  # 일부 데이터 확인
+
+# 토큰이 3개 이상인 리뷰만 선택
+final_data = select_review(tokenized_data)
+
+# 전처리 후 남은 데이터 확인
+if not final_data:
+    print("Error: No valid documents left after preprocessing.")
+else:
+    print(f"Preprocessed data: {final_data[:5]}")  # 일부 데이터 확인
+
+# LDA 모델링 함수
+def lda_modeling(review_prep):
+    dictionary = corpora.Dictionary(review_prep)
+    corpus = [dictionary.doc2bow(review) for review in review_prep]
+
+    # 말뭉치와 사전이 비어 있는지 확인
+    if len(dictionary) == 0 or len(corpus) == 0:
+        raise ValueError("Error: No terms available for LDA after preprocessing.")
+
+    id2word = dictionary  # LDA 모델에 사전을 전달할 때 dictionary 객체로 전달
+
+    # LDA 모델 학습
+    model = LdaModel(
+        corpus=corpus,
+        id2word=id2word,
+        chunksize=2000,
+        alpha='auto',
+        eta='auto',
+        iterations=400,
+        num_topics=3,
+        passes=20,
+        eval_every=None
+    )
+    return model, corpus, dictionary
+
+# 모델 학습 수행
+model, corpus, dictionary = lda_modeling(final_data)
+
+# 주제별 상위 단어 출력
+topics = model.print_topics(num_words=10)
+for idx, topic in topics:
+    print(f"Topic {idx}: {topic}")
+
+# 토픽 일관성 계산
+top_topics = model.top_topics(corpus)
+avg_topic_coherence = sum([t[1] for t in top_topics]) / len(top_topics)
+print('Average topic coherence: %.4f.' % avg_topic_coherence)
+
+from pprint import pprint
+pprint(top_topics)
+
+from konlpy.tag import Okt
+import re
+from gensim.models.phrases import Phrases, Phraser
+from gensim import corpora
+from gensim.models.ldamodel import LdaModel
+from sklearn.feature_extraction.text import TfidfVectorizer
+
+# Okt 형태소 분석기 선언
+okt = Okt()
+
+# 불용어 리스트 로드
+stopword_list = pd.read_excel('/content/drive/MyDrive/chaewon folder/4학기/pbl/데이터/리뷰/stopword_list.xlsx')
+stopword_list = stopword_list['stopword'].str.strip().tolist()
+
+
+
+# 유사어 통합 사전
+synonym_dict = {
+    "친절하세요": "친절",
+    "친절하시고": "친절",
+    "친절하고": "친절",
+    "친절하셔서": "친절",
+    "친절해요": "친절",
+    "친절한": "친절",
+    "맛있어요": "맛있음",
+    "맛이": "맛있음",
+    "맛도": "맛있음",
+    "맛있게": "맛있음",
+    "맛잇게": "맛있음",
+    "맛잇": "맛있음",
+    '맛있': "맛있음",
+    "맛있고": "맛있음",
+    "맛있네요": "맛있음",
+    "매장이": "매장",
+    "매장도": "매장",
+    "카페": "매장",
+    "가게": "매장",
+    "사장": "사장님",
+    "사장님이": "사장님",
+    "사장님께서": "사장님",
+    "직원": "사장님",
+    "직원분이":'사장님',
+    "음료도": "음료",
+    "커피도": "음료",
+    "커피가": "음료",
+    "아아": "아메리카노",
+    "다시": "재방문",
+    "자주": "재방문",
+    "항상": "재방문",
+    "종종": "재방문",
+    "깨끗하고": "깔끔",
+    "깨끗하게": "깔끔",
+    "깨끗": "깔끔",
+    "깔끔하고": "깔끔",
+    "깔끔하게": "깔끔",
+    "깔끔": "깔끔",
+    "편해요":"편안",
+    "편하고":"편안",
+    "친절해서":"친절",
+    "친절합니다":"친절",
+    "친절해":"친절",
+    "얘기":"대화",
+    "늘":'재방문',
+    "방문":"재방문"
+}
+
+# 자주 등장하는 불필요한 단어 추가
+high_frequency_words = ['최고','사장님','점','층','한잔','얼음','지점','안','앞',"요","디아","이","분", "기",'마시기', '기분', '곳', '맛', '사장님', '매장', '넘','굿굿','잘','감사합니다','짱','갑니다','더','많아요', '맛있음', '사장님', '매장', '마셨어요', '마셧어요', '좋습니다', '좋아요', '좋네요',
+                        '이디야가', '이디야는', '정말', '역시', '엄청', '제가', '먹고', '주문', '좋고', '좋은', '좋았어요',
+                        '굳', '굿', '조아요']
+stopword_list.extend(high_frequency_words)
+
+# 명사 추출 및 불용어 제거 함수
+def extract_nouns(text):
+    # 형태소 분석 후 명사만 추출
+    nouns = okt.nouns(text)
+    # 유사어 통합 및 불용어 제거
+    processed_nouns = [synonym_dict.get(word, word) for word in nouns if word not in stopword_list]
+    return processed_nouns
+
+# 리뷰 데이터 전처리 (명사 추출)
+tokenized_data = [extract_nouns(doc) for doc in df['content']]  # 실제 열 이름으로 수정
+
+# 2-gram(두 단어) 모델 학습
+bigram = Phrases(tokenized_data, min_count=2, threshold=10)  # min_count와 threshold는 조정 가능
+bigram_mod = Phraser(bigram)
+
+# 2-gram 모델 적용
+tokenized_data_with_bigrams = [bigram_mod[doc] for doc in tokenized_data]
+
+# LDA 모델 학습을 위한 말뭉치 및 사전 생성
+def lda_modeling(review_prep, num_topics=4):
+    dictionary = corpora.Dictionary(review_prep)
+    corpus = [dictionary.doc2bow(review) for review in review_prep]
+
+    # LDA 모델 학습
+    model = LdaModel(
+        corpus=corpus,
+        id2word=dictionary,
+        chunksize=2000,
+        alpha=0.1,
+        eta=0.1,
+        iterations=400,
+        num_topics=num_topics,
+        passes=20,
+        eval_every=None
+    )
+    return model, corpus, dictionary
+
+# LDA 모델 학습 및 토픽 추출
+model, corpus, dictionary = lda_modeling(tokenized_data_with_bigrams)
+
+# 주제별 상위 단어 출력
+topics = model.print_topics(num_words=10)
+for idx, topic in topics:
+    print(f"Topic {idx}: {topic}")
+
+# 토픽 일관성 계산
+top_topics = model.top_topics(corpus)
+avg_topic_coherence = sum([t[1] for t in top_topics]) / len(top_topics)
+print('Average topic coherence: %.4f.' % avg_topic_coherence)
